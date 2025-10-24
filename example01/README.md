@@ -20,7 +20,8 @@ The simplest possible Eino agent - just a terminal chat with Gemini.
 
 **Run:**
 ```bash
-go run examples/step1/main.go
+# From the repository root:
+make step1
 ```
 
 ---
@@ -38,7 +39,8 @@ Adds professional UX with system prompts, color-coded output, and streaming resp
 
 **Run:**
 ```bash
-go run examples/step2/main.go
+# From the repository root:
+make step2
 ```
 
 **What changed from Step 1:**
@@ -65,11 +67,9 @@ Demonstrates RAG (Retrieval Augmented Generation) with a **single hardcoded ques
 
 **Run:**
 ```bash
-# First, create the knowledge base:
-go run ./cmd/indexing
-
-# Then run the example:
-go run examples/step3/main.go
+# From the repository root:
+make step3
+# (automatically runs 'make setup' if knowledge base doesn't exist)
 ```
 
 **What it shows:**
@@ -80,81 +80,100 @@ go run examples/step3/main.go
 
 ---
 
-### Step 4: Tool Calling (ISOLATION)
+### Step 4: RAG + Tools Integration
 **File:** `step4/main.go`
 
-Demonstrates tool calling with a **single hardcoded question**. No chat loop - just the tool workflow.
+Combines RAG retrieval with tool calling in an interactive chat loop using Eino's ReAct agent.
 
 **Concepts:**
 - Defining tools with `InferTool`
 - Tool metadata (name, description, parameters)
-- Model requesting tool execution
-- Executing tools and formatting results
-- Sending results back to model
-- Model using results in final answer
+- ReAct agent for intelligent tool orchestration
+- Combining RAG retrieval with tool calling
+- Interactive streaming chat with both capabilities
 
 **Run:**
 ```bash
-go run examples/step4/main.go
+# From the repository root:
+make step4
+# Optional: export TAVILY_API_KEY="your-tavily-key" for Tavily search
 ```
 
-**What it shows:**
-1. Question: "What is 25 multiplied by 17?"
-2. Model identifies need for calculator tool
-3. Model requests tool call with parameters
-4. We execute the tool
-5. We send result back
-6. Model provides natural language answer
+**What it demonstrates:**
+- RAG retrieval for GopherCon Africa questions
+- Internet search tool (Tavily) for current events
+- ReAct agent deciding when to use which capability
+- Streaming responses with spinner UX
+- Full conversation history management
 
 ---
 
-### Step 5: Full Integration 🚀 - Where Eino Shines
-**File:** `step5/main.go`
+### Step 5: Production-Ready Agent 🚀 - Clean Architecture
+**File:** `step5/main.go` (with `agent/` and `ui/` packages)
 
-**THIS is where Eino proves its value!** Bringing everything together:
-- Terminal chat loop (from step 1 & 2)
-- RAG retrieval (from step 3)  
-- Tool calling (from step 4)
-- **All orchestrated by Eino's graph + ReAct pattern**
+**A production-grade agent with clean architecture!** This step demonstrates:
+- **Proper Go project structure** with separated concerns
+- **Eino graph orchestration** for complex workflows
+- **Multiple tools** working together seamlessly
+- **Professional UI** with thinking indicators and error handling
 
-**Why Eino here?** Steps 1-4 were simple enough for manual orchestration. But orchestrating RAG + Tools + Chat + Memory manually would require complex conditional logic, loops, and state management. Eino's graph makes it declarative and manageable.
+**Why Step 5 matters:** This shows how to build a **real production agent**, not just a demo. The code is organized, testable, and maintainable.
 
 **Concepts:**
-- Eino graph composition (declarative node-based orchestration!)
-- ReAct pattern for tool orchestration
-- Automatic RAG retrieval for every query
-- Tool calling via ReAct agent
-- Conversation history management
-- Complete streaming chat flow
+- Clean architecture (agent, UI, tools separation)
+- Eino graph composition with type-safe nodes
+- ReAct agent with multiple tools
+- Callback handlers for UI updates
+- Streaming with thinking mode visualization
+- Dependency injection pattern
 
 **The Graph Architecture:**
 ```
-User Input → Extract Query → RAG Retriever → Chat Template → ReAct Agent → Output
-                ↓              (documents)         ↑
-            Extract Vars  → → → → → → → → → → → → ↑
-            (history, date)
+User Input → Extract Variables → Chat Template → ReAct Agent → Output
+              (query, history, date)      ↓
+                                    (system prompt)
+                                          ↓
+                                    [Multiple Tools]
+                                    - RAG (GopherCon KB)
+                                    - Web Search (Tavily/DDG)
+                                    - Read File
+                                    - Search Files
+                                    - Edit File
+                                    - Git Clone
+```
+
+**Project Structure:**
+```
+step5/
+├── main.go           # Entry point & dependency wiring
+├── agent/
+│   ├── agent.go      # Agent orchestration & conversation loop
+│   ├── graph.go      # Eino graph definition
+│   └── tools.go      # Tool setup & configuration
+└── ui/
+    └── ui.go         # Terminal UI with callbacks
 ```
 
 **Run:**
 ```bash
-# Make sure you have the knowledge base:
-cd .. && go run ./cmd/indexing && cd example01
-
-# Run the full agent:
-go run step5/main.go
+# From the repository root:
+make step5
+# (automatically runs 'make setup' if knowledge base doesn't exist)
 ```
 
 **Try asking:**
-- "Who are the speakers at GopherCon Africa 2025?"
-- "What is 25 multiplied by 17?"
-- "Tell me about the talks, then calculate 100 + 42"
+- "Who are the speakers at GopherCon Africa 2025?" (uses RAG tool)
+- "What's the latest news about Go 1.23?" (uses web search)
+- "Search for main.go files in this project" (uses search files tool)
+- "Read the README.md file" (uses read file tool)
 
-**The Magic:** The agent automatically:
-- ✅ Retrieves relevant GopherCon docs for every query
-- ✅ Uses calculator tool when math is needed
-- ✅ Maintains conversation history
-- ✅ Streams responses in real-time
-- ✅ All orchestrated by Eino's graph!
+**The Magic:** The agent:
+- ✅ Uses Eino's graph for declarative orchestration
+- ✅ Intelligently selects the right tool for each query
+- ✅ Shows "thinking" process in real-time
+- ✅ Maintains conversation history across turns
+- ✅ Gracefully handles tool failures with fallbacks
+- ✅ Clean, maintainable, production-ready code!
 
 ---
 
@@ -170,57 +189,41 @@ Adds conversation persistence across sessions.
 
 ---
 
-## 🎓 For Your GopherCon Africa Talk
-
-### Presentation Strategy
-
-**DON'T show:**
-- Steps 1-2 in detail (basics everyone knows)
-- Internal Eino plumbing
-- Environment setup (boring!)
-
-**DO show:**
-1. **Start with Step 3** - "Let's see RAG in action!"
-   - Run it live, show document retrieval
-   - Explain why RAG matters
-
-2. **Move to Step 4** - "Now let's see tool calling!"
-   - Run it live, show the workflow
-   - Explain the back-and-forth
-
-3. **Step 5 is your finale** - "Now watch them work together!"
-   - Live demo of full agent
-   - Show it handling both RAG and tool questions
-   - Show tool chaining
-
-4. **Quick diff walkthrough**
-   ```bash
-   # Show code differences
-   diff step3/main.go step5/main.go
-   ```
-
-### Time Management (45 min talk)
-- **Intro (5 min):** Why AI agents? Why Eino?
-- **RAG Demo - Step 3 (10 min):** Run + explain
-- **Tools Demo - Step 4 (10 min):** Run + explain
-- **Integration - Step 5 (15 min):** Run + code walkthrough
-- **Q&A (5 min)**
-
----
-
 ## 🛠️ Prerequisites
 
 ### Environment Variables
 ```bash
+# Required for all steps
 export GEMINI_API_KEY="your-api-key"
+
+# Optional for steps 4 & 5 (web search)
+# If not set, DuckDuckGo will be used as fallback
+export TAVILY_API_KEY="your-tavily-key"
 ```
 
-### Create Knowledge Base
+### Quick Start
 ```bash
-go run ./cmd/indexing
-```
+# 1. Clone the repository
+git clone https://github.com/olusolaa/goforai
+cd goforai
 
-This creates `data/chromem.gob` with GopherCon Africa 2025 information.
+# 2. Set up environment
+export GEMINI_API_KEY="your-api-key"
+# Optional: export TAVILY_API_KEY="your-tavily-key"
+
+# 3. Create knowledge base (required for steps 3-5)
+make setup
+
+# 4. Run any step
+make step1  # Basic chat
+make step2  # With formatting
+make step3  # RAG (auto-runs setup if needed)
+make step4  # RAG + Tools
+make step5  # Production agent
+
+# See all commands
+make help
+```
 
 ---
 
