@@ -13,7 +13,7 @@ import (
 	"github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
-	chromem "github.com/philippgille/chromem-go"
+	"github.com/philippgille/chromem-go"
 )
 
 // Constants for default values improve readability and maintainability.
@@ -74,10 +74,10 @@ func New(ctx context.Context, collectionName string, embedder embedding.Embedder
 	}
 
 	cfg := &config{
-		topK: defaultTopK, 
+		topK: defaultTopK,
 	}
 	for _, opt := range opts {
-		opt(cfg) 
+		opt(cfg)
 	}
 
 	var db *chromem.DB
@@ -170,7 +170,13 @@ func (c *ChromemDB) Retrieve(ctx context.Context, query string, opts ...retrieve
 
 	embedding32 := convertToFloat32(embeddings[0])
 
-	results, err := c.collection.QueryEmbedding(ctx, embedding32, c.topK, nil, nil)
+	numDocs := c.collection.Count()
+	topK := c.topK
+	if topK > numDocs {
+		topK = numDocs
+	}
+
+	results, err := c.collection.QueryEmbedding(ctx, embedding32, topK, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query collection: %w", err)
 	}

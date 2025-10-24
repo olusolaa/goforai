@@ -28,7 +28,7 @@ check-env:
 .PHONY: setup
 setup: check-env
 	@echo "📦 Creating GopherCon Africa knowledge base..."
-	@go run ./example02/cmd/indexing
+	@go run ./foundation/indexing
 	@echo "✅ Knowledge base ready: ./data/chromem.gob"
 
 # ==============================================================================
@@ -84,7 +84,7 @@ web: check-env
 
 .PHONY: indexing
 indexing: check-env
-	go run ./example02/cmd/indexing
+	go run ./foundation/indexing
 
 # ==============================================================================
 # Presentation Shortcuts

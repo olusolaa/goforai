@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -17,26 +18,27 @@ type GitCloneConfig struct {
 	BaseDir string
 }
 
-type GitCloneImpl struct {
-	config *GitCloneConfig
-}
-
 func NewGitCloneTool(ctx context.Context, config *GitCloneConfig) (tool.BaseTool, error) {
 	if config == nil {
-		config = &GitCloneConfig{
-			BaseDir: "repos",
-		}
+		config = &GitCloneConfig{}
 	}
 	if config.BaseDir == "" {
-		return nil, fmt.Errorf("base dir cannot be empty")
+		config.BaseDir = "repos"
 	}
 
-	impl := &GitCloneImpl{config: config}
+	// Make BaseDir an absolute path to prevent ambiguity.
+	absBaseDir, err := filepath.Abs(config.BaseDir)
+	if err != nil {
+		return nil, fmt.Errorf("could not get absolute path for base dir: %w", err)
+	}
+	config.BaseDir = absBaseDir
 
 	return utils.InferTool(
 		"gitclone",
-		"Clone or pull a Git repository to the 'repos' directory. CRITICAL: The response returns a 'path' field - you MUST use this EXACT path when calling search_files, read_file, or any file operation. Example: if path='repos/cloudwego/eino', then use search_files(path='repos/cloudwego/eino'). Use action='clone' for new repos, action='pull' to update existing repos.",
-		impl.Invoke,
+		"Clone or pull a Git repository into a secure, local directory. CRITICAL: The response returns a 'path' field - you MUST use this EXACT path when calling other file tools. Use action='clone' for new repos, action='pull' to update existing ones.",
+		func(ctx context.Context, req *GitCloneRequest) (*GitCloneResponse, error) {
+			return invokeGitClone(ctx, req, config)
+		},
 	)
 }
 
@@ -48,145 +50,130 @@ const (
 )
 
 type GitCloneRequest struct {
-	Url    string         `json:"url" jsonschema:"description=The URL of the repository to clone"`
-	Action GitCloneAction `json:"action" jsonschema:"description=The action to perform, 'clone' or 'pull'"`
+	Url    string         `json:"url" jsonschema:"description=The URL of the repository to clone (HTTPS or SSH format)."`
+	Action GitCloneAction `json:"action" jsonschema:"description=The action to perform: 'clone' or 'pull'."`
 }
 
 type GitCloneResponse struct {
-	Message      string `json:"message" jsonschema:"description=Success message"`
-	Path         string `json:"path,omitempty" jsonschema:"description=Relative path to the cloned repository (use this with search_files and read_file)"`
-	Organization string `json:"organization,omitempty" jsonschema:"description=GitHub organization or user name"`
-	Repository   string `json:"repository,omitempty" jsonschema:"description=Repository name"`
-	NextSteps    string `json:"next_steps,omitempty" jsonschema:"description=Suggested next actions to explore the repository"`
-	Error        string `json:"error,omitempty" jsonschema:"description=Error message if operation failed"`
+	Message   string `json:"message" jsonschema:"description=Success message describing the result."`
+	Path      string `json:"path,omitempty" jsonschema:"description=The full, safe local path to the repository. Use this in subsequent tool calls."`
+	NextSteps string `json:"next_steps,omitempty" jsonschema:"description=Suggested next actions to explore the repository."`
+	Error     string `json:"error,omitempty" jsonschema:"description=Error message if the operation failed."`
 }
 
-func (g *GitCloneImpl) Invoke(ctx context.Context, req *GitCloneRequest) (*GitCloneResponse, error) {
-	res := &GitCloneResponse{}
+// gitURLRegex is a robust regex to parse different Git URL formats.
+var gitURLRegex = regexp.MustCompile(`^(?:(?:https?|git)://|git@)(?P<host>[^:/]+)[:/](?P<org>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$`)
 
+type parsedURL struct {
+	Host, Org, Repo string
+}
+
+func parseAndSanitizeURL(url string) (*parsedURL, error) {
+	if !gitURLRegex.MatchString(url) {
+		return nil, fmt.Errorf("invalid or unsupported git URL format")
+	}
+	matches := gitURLRegex.FindStringSubmatch(url)
+	names := gitURLRegex.SubexpNames()
+
+	result := &parsedURL{}
+	for i, name := range names {
+		if i != 0 && name != "" {
+			// **CRITICAL SECURITY STEP**: Sanitize components to prevent path traversal.
+			sanitizedValue := strings.ReplaceAll(matches[i], ".", "_")   // Replace dots to be safe
+			sanitizedValue = strings.ReplaceAll(sanitizedValue, "/", "") // Should not happen with regex, but belt-and-suspenders.
+
+			switch name {
+			case "host":
+				result.Host = sanitizedValue
+			case "org":
+				result.Org = sanitizedValue
+			case "repo":
+				result.Repo = sanitizedValue
+			}
+		}
+	}
+
+	if result.Org == "" || result.Repo == "" {
+		return nil, fmt.Errorf("could not extract organization and repository from URL")
+	}
+	return result, nil
+}
+
+func invokeGitClone(ctx context.Context, req *GitCloneRequest, config *GitCloneConfig) (*GitCloneResponse, error) {
 	if req.Url == "" {
-		res.Error = "URL cannot be empty"
-		return res, nil
+		return &GitCloneResponse{Error: "URL cannot be empty"}, nil
+	}
+	if req.Action == "" {
+		return &GitCloneResponse{Error: "action must be 'clone' or 'pull'"}, nil
 	}
 
-	valid, cloneURL := isValidGitURL(req.Url)
-	if !valid {
-		res.Error = fmt.Sprintf("Invalid Git URL format: %s", req.Url)
-		return res, nil
+	parsed, err := parseAndSanitizeURL(req.Url)
+	if err != nil {
+		return &GitCloneResponse{Error: err.Error()}, nil
 	}
 
-	repoDir, repoName := extractRepoDir(cloneURL)
-	repoDir = filepath.Join(g.config.BaseDir, repoDir)
-	repoPath := filepath.Join(repoDir, repoName)
+	// Construct a safe, predictable path.
+	repoPath := filepath.Join(config.BaseDir, parsed.Host, parsed.Org, parsed.Repo)
 
-	if err := os.MkdirAll(g.config.BaseDir, 0755); err != nil {
-		res.Error = fmt.Sprintf("Failed to create directory: %v", err)
-		return res, nil
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
+		return &GitCloneResponse{Error: fmt.Sprintf("failed to create parent directory: %v", err)}, nil
 	}
 
-	if req.Action == GitCloneActionClone {
+	switch req.Action {
+	case GitCloneActionClone:
 		if _, err := os.Stat(repoPath); err == nil {
-			res.Error = "Repository already exists"
-			return res, nil
+			return &GitCloneResponse{
+				Error: fmt.Sprintf("repository already exists at '%s'. Did you mean to use action='pull'?", repoPath),
+				Path:  repoPath,
+			}, nil
 		}
 
-		// Use go-git (pure Go implementation, no external git required!)
 		_, err := git.PlainCloneContext(ctx, repoPath, false, &git.CloneOptions{
-			URL:           cloneURL,
-			Depth:         1,
+			URL:           req.Url, // Use original URL for cloning
+			Depth:         1,       // Shallow clone for speed and space
 			SingleBranch:  true,
 			ReferenceName: plumbing.HEAD,
-			Progress:      nil, // Could add progress reporting
 		})
-
 		if err != nil {
-			res.Error = fmt.Sprintf("Clone failed: %v", err)
-			return res, nil
-		}
-	} else if req.Action == GitCloneActionPull {
-		if _, err := os.Stat(repoPath); os.IsNotExist(err) {
-			res.Error = fmt.Sprintf("repo does not exist: %s", repoPath)
-			return res, nil
+			return &GitCloneResponse{Error: fmt.Sprintf("clone failed: %v", err)}, nil
 		}
 
-		// Open existing repository
+	case GitCloneActionPull:
 		repo, err := git.PlainOpen(repoPath)
 		if err != nil {
-			res.Error = fmt.Sprintf("Failed to open repo: %v", err)
-			return res, nil
+			if err == git.ErrRepositoryNotExists {
+				return &GitCloneResponse{Error: fmt.Sprintf("repository does not exist at '%s'. Did you mean to use action='clone'?", repoPath)}, nil
+			}
+			return &GitCloneResponse{Error: fmt.Sprintf("failed to open repository: %v", err)}, nil
 		}
 
-		// Get the working tree
 		w, err := repo.Worktree()
 		if err != nil {
-			res.Error = fmt.Sprintf("Failed to get worktree: %v", err)
-			return res, nil
+			return &GitCloneResponse{Error: fmt.Sprintf("failed to get worktree: %v", err)}, nil
 		}
 
-		// Pull latest changes
-		err = w.PullContext(ctx, &git.PullOptions{
-			RemoteName: "origin",
-			Progress:   nil,
-		})
+		// **ROBUSTNESS CHECK**: Ensure worktree is clean before pulling.
+		status, err := w.Status()
+		if err != nil {
+			return &GitCloneResponse{Error: fmt.Sprintf("failed to get worktree status: %v", err)}, nil
+		}
+		if !status.IsClean() {
+			return &GitCloneResponse{Error: "cannot pull: repository has uncommitted changes"}, nil
+		}
 
+		err = w.PullContext(ctx, &git.PullOptions{RemoteName: "origin"})
 		if err != nil && err != git.NoErrAlreadyUpToDate {
-			res.Error = fmt.Sprintf("Pull failed: %v", err)
-			return res, nil
+			return &GitCloneResponse{Error: fmt.Sprintf("pull failed: %v", err)}, nil
 		}
-	}
-
-	// Get relative path from current directory
-	relativePath, err := filepath.Rel(".", repoPath)
-	if err != nil {
-		// Fallback to the path relative to base directory
-		relativePath = filepath.Join(g.config.BaseDir, repoDir, repoName)
-	}
-
-	res.Message = fmt.Sprintf("Successfully %sd repository to %s", req.Action, relativePath)
-	res.Path = relativePath
-	res.Organization = repoDir
-	res.Repository = repoName
-	res.NextSteps = fmt.Sprintf("IMPORTANT: Use the EXACT path '%s' with all file tools. Examples:\n- search_files(path='%s', pattern='**/*.go')\n- read_file(path='%s/README.md')\n- search_files(path='%s', contains='function')", relativePath, relativePath, relativePath, relativePath)
-
-	return res, nil
-}
-
-func isValidGitURL(url string) (bool, string) {
-	cleanURL := strings.TrimSuffix(url, ".git")
-
-	parts := strings.Split(cleanURL, "/")
-	if len(parts) < 2 {
-		return false, ""
-	}
-
-	var standardURL string
-	switch {
-	case strings.HasPrefix(url, "git@"):
-		if strings.Contains(url, ":") {
-			return true, withGit(url)
-		}
-		return false, ""
-
-	case strings.HasPrefix(url, "http://"), strings.HasPrefix(url, "https://"):
-		return true, withGit(url)
 
 	default:
-		standardURL = "https://" + withGit(url)
+		return &GitCloneResponse{Error: fmt.Sprintf("invalid action '%s', use 'clone' or 'pull'", req.Action)}, nil
 	}
 
-	return true, standardURL
-}
-
-func withGit(url string) string {
-	if !strings.HasSuffix(url, ".git") {
-		url += ".git"
-	}
-	return url
-}
-
-func extractRepoDir(url string) (string, string) {
-	parts := strings.Split(url, "/")
-	repoDir := parts[len(parts)-2]
-	repoName := strings.TrimSuffix(parts[len(parts)-1], ".git")
-	return repoDir, repoName
+	return &GitCloneResponse{
+		Message: fmt.Sprintf("Successfully %sd repository to '%s'", req.Action, repoPath),
+		Path:    repoPath,
+		NextSteps: fmt.Sprintf("IMPORTANT: Use the EXACT path '%s' with all file tools. Examples:\n- search_files(path='%s', pattern='**/*.go')\n- read_file(path='%s/README.md')",
+			repoPath, repoPath, repoPath),
+	}, nil
 }

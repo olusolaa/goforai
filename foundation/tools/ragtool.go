@@ -3,9 +3,9 @@ package tools
 import (
 	"context"
 	"fmt"
+	"github.com/olusolaa/goforai/foundation/gemini"
 	"strings"
 
-	"github.com/olusolaa/goforai/foundation"
 	"github.com/olusolaa/goforai/foundation/chromemdb"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -22,7 +22,7 @@ type RAGSearchResponse struct {
 }
 
 func NewRAGTool(ctx context.Context) (tool.BaseTool, error) {
-	embedder, err := foundation.NewEmbedder(ctx)
+	embedder, err := gemini.NewEmbedder(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create embedder: %w", err)
 	}

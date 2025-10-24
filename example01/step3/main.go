@@ -1,136 +1,268 @@
-// Step 3: RAG Retrieval in ISOLATION
+// Step 3: Adding Knowledge (RAG) to Our Interactive Agent
 //
-// This example demonstrates the RAG (Retrieval Augmented Generation) workflow
-// using a single hardcoded question. This isolates the RAG mechanics so you can
-// see exactly what happens:
-//  1. User asks a question
-//  2. System retrieves relevant documents from vector database
-//  3. Documents are added to context
-//  4. Model answers based on retrieved documents
+// This is a direct evolution of Step 2. We take the polished, streaming, interactive
+// chat agent and add RAG (Retrieval-Augmented Generation) capabilities. The agent
+// will retrieve relevant documents from a vector database and use them to provide
+// factual, context-aware answers. We maintain all the UX polish from Step 2.
 //
-// # Running the example:
-//
-//	go run examples/step3/main.go
-//
-// # Requirements:
-//
-//	GEMINI_API_KEY environment variable must be set
-//	data/chromem.gob must exist (run: go run ./cmd/indexing)
+// The narrative focuses on how Eino's components (Retriever + ChatTemplate)
+// compose naturally, and why Go is exceptionally well-suited for the
+// performance-critical task of retrieval.
 
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"strings"
+	"time"
 
+	"github.com/cloudwego/eino-ext/components/embedding/gemini"
+	geminiModel "github.com/cloudwego/eino-ext/components/model/gemini"
+	"google.golang.org/genai"
+
+	"github.com/cloudwego/eino/components/embedding"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/components/prompt"
+	"github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"
-	"github.com/olusolaa/goforai/foundation"
 	"github.com/olusolaa/goforai/foundation/chromemdb"
 )
 
+// ---
+// Step 1: The Orchestrator (Evolving for RAG)
+// ---
+
 func main() {
-	if err := run(); err != nil {
+	if err := run(context.Background()); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run() error {
-	ctx := context.Background()
-
-	// Hardcoded question to demonstrate RAG
-	question := "Who are the keynote speakers at GopherCon Africa 2025?"
-
-	fmt.Printf("Question:\n\n%s\n", question)
-
-	// STEP 1: LOAD THE VECTOR DATABASE
-	fmt.Println("\n" + strings.Repeat("=", 80))
-	fmt.Println("STEP 1: Loading ChromemDB Vector Database")
-	fmt.Println(strings.Repeat("=", 80))
-
-	// Use foundation retriever!
-	embedder, err := foundation.NewEmbedder(ctx)
+func run(ctx context.Context) error {
+	// ********* NEW: Centralized AI client creation for model and embedder. *******
+	clients, err := newAIClients(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create embedder: %w", err)
+		return err
 	}
 
-	chromemRetriever, err := chromemdb.New(ctx, "example01", embedder,
-		chromemdb.WithDBPath("./data/chromem.gob"),
-		chromemdb.WithTopK(3))
+	// ************* NEW: We construct our retriever, the core of RAG. *************
+	ragRetriever, err := newRetriever(ctx, clients.embedder) //This component is responsible for finding relevant information.
 	if err != nil {
-		return fmt.Errorf("failed to create retriever: %w", err)
+		return err
 	}
 
-	// STEP 2: RETRIEVE RELEVANT DOCUMENTS
-	fmt.Println("\n" + strings.Repeat("=", 80))
-	fmt.Println("STEP 2: Retrieving Relevant Documents")
-	fmt.Println(strings.Repeat("=", 80))
-
-	docs, err := chromemRetriever.Retrieve(ctx, question)
+	// ************ NEW: Create a chat template for RAG prompt formatting. *********
+	ragTemplate, err := newRAGTemplate()
 	if err != nil {
-		return fmt.Errorf("failed to retrieve documents: %w", err)
+		return err
 	}
 
-	fmt.Printf("\nRetrieved %d documents:\n\n", len(docs))
-	for i, doc := range docs {
-		fmt.Printf("\u001b[92mDocument %d\u001b[0m:\n", i+1)
-		content := strings.TrimSpace(doc.Content)
-		if len(content) > 200 {
-			content = content[:200] + "..."
+	// ************ CHANGED: Create an agent with the new RAG components. **********
+	agent := NewAgent(clients.chatModel, ragRetriever, ragTemplate, os.Stdin, os.Stdout)
+	return agent.Run(ctx)
+}
+
+// ---
+// Step 2: The Core Logic - A RAG-Powered Agent
+// ---
+
+// ******** CHANGED: System prompt is now specific to our RAG knowledge base. *******
+const systemPrompt = `You are an assistant with access to a knowledge base about GopherCon Africa 2024. Use the provided context to answer questions accurately.`
+
+// ****** CHANGED: Our Agent struct now includes retriever and template dependencies. ******
+
+// composition adding new tools
+
+type Agent struct {
+	model     model.ToolCallingChatModel
+	retriever retriever.Retriever // Finds relevant documents. chromem-go, go native (745 stars)
+	template  prompt.ChatTemplate // Formats prompts with context.
+	scanner   *bufio.Scanner
+	out       io.Writer
+}
+
+// ********* CHANGED: The constructor now accepts the new RAG components. **********
+
+func NewAgent(m model.ToolCallingChatModel, r retriever.Retriever, t prompt.ChatTemplate, in io.Reader, out io.Writer) *Agent {
+	return &Agent{
+		model:     m,
+		retriever: r,
+		template:  t,
+		scanner:   bufio.NewScanner(in),
+		out:       out,
+	}
+}
+
+// Run is a direct evolution of Step 2, but now performs RAG retrieval before each query.
+func (a *Agent) Run(ctx context.Context) error {
+	conversation := []*schema.Message{schema.SystemMessage(systemPrompt)}
+	fmt.Fprintf(a.out, "\nChat with a RAG-powered agent (use 'ctrl-c' to quit)\n")
+
+	for {
+		fmt.Fprintf(a.out, "%s\nYou%s: ", colorBlue, colorReset)
+		if !a.scanner.Scan() {
+			break
 		}
-		fmt.Printf("  %s\n\n", content)
+		userInput := a.scanner.Text()
+		if userInput == "" {
+			continue
+		}
+
+		// ********* NEW: Retrieve relevant documents for the user's question. *********
+		// doing heavy vector math. In Go, this is fast, compiled code running without a GIL, and
+		// can be easily parallelized.
+		docs, err := a.retriever.Retrieve(ctx, userInput)
+		if err != nil {
+			fmt.Fprintf(a.out, "\n\n%sERROR: %s%s\n\n", colorRed, err, colorReset)
+			continue
+		}
+
+		// ****** NEW: Format the prompt with retrieved context using a ChatTemplate. ******
+		var sb strings.Builder
+		for i, doc := range docs {
+			if i > 0 {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString(fmt.Sprintf("Document %d:\n%s", i+1, doc.Content))
+		}
+
+		messages, err := a.template.Format(ctx, map[string]any{"context": sb.String(), "question": userInput})
+		if err != nil {
+			fmt.Fprintf(a.out, "\n\n%sERROR: %s%s\n\n", colorRed, err, colorReset)
+			continue
+		}
+
+		// Extract the user message with context from the template (skip system message)
+		userMessageWithContext := messages[len(messages)-1]
+		conversation = append(conversation, userMessageWithContext)
+		fmt.Fprintf(a.out, "%s\n%s%s: ", colorYellow, chatModelName, colorReset)
+
+		streamReader, err := a.model.Stream(ctx, conversation)
+		if err != nil {
+			fmt.Fprintf(a.out, "\n\n%sERROR: %s%s\n\n", colorRed, err, colorReset)
+			continue
+		}
+
+		done := make(chan struct{})
+		go a.showSpinner(done)
+
+		var chunks []*schema.Message
+		firstChunk := true
+		for {
+			chunk, err := streamReader.Recv()
+			if err != nil {
+				if firstChunk {
+					close(done)
+				}
+				if err == io.EOF {
+					break
+				}
+				fmt.Fprintf(a.out, "\n\n%sERROR: %s%s\n\n", colorRed, err, colorReset)
+				break
+			}
+			if firstChunk {
+				close(done)
+				time.Sleep(10 * time.Millisecond)
+				firstChunk = false
+			}
+			fmt.Fprint(a.out, chunk.Content)
+			chunks = append(chunks, chunk)
+		}
+		fmt.Fprint(a.out, "\n")
+
+		if len(chunks) > 0 {
+			fullMsg, _ := schema.ConcatMessages(chunks)
+			conversation = append(conversation, fullMsg)
+		}
 	}
+	return a.scanner.Err()
+}
 
-	// STEP 3: CREATE AUGMENTED PROMPT WITH RETRIEVED DOCUMENTS
-	fmt.Println(strings.Repeat("=", 80))
-	fmt.Println("STEP 3: Creating Augmented Prompt with Retrieved Context")
-	fmt.Println(strings.Repeat("=", 80))
-
-	docsText := ""
-	for _, doc := range docs {
-		docsText += doc.Content + "\n\n"
+// *** Helper method for the concurrent spinner (Unchanged from Step 2). ***
+func (a *Agent) showSpinner(done <-chan struct{}) {
+	spinner := `|/-\`
+	i := 0
+	for {
+		select {
+		case <-done:
+			fmt.Fprint(a.out, "\b")
+			return
+		default:
+			fmt.Fprintf(a.out, "%c", spinner[i])
+			i = (i + 1) % len(spinner)
+			time.Sleep(100 * time.Millisecond)
+			fmt.Fprint(a.out, "\b")
+		}
 	}
+}
 
-	augmentedPrompt := fmt.Sprintf(`Based on the following information, answer the question.
+// ---
+// Step 3: Centralized Factories for Dependencies
+// ---
 
-Context Documents:
-==== doc start ====
-%s
-==== doc end ====
+const (
+	chatModelName      = "gemini-2.5-flash"
+	embeddingModelName = "text-embedding-004"
+	dbPath             = "./data/chromem.gob"
+	colorBlue          = "\u001b[94m"
+	colorYellow        = "\u001b[93m"
+	colorRed           = "\u001b[91m"
+	colorReset         = "\u001b[0m"
+)
 
-Question: %s`, docsText, question)
+// ******** NEW: A struct to hold all our AI clients for efficient creation. *******
+type aiClients struct {
+	chatModel model.ToolCallingChatModel
+	embedder  embedding.Embedder
+}
 
-	fmt.Printf("\n\u001b[93mAugmented Prompt Length: %d characters\u001b[0m\n", len(augmentedPrompt))
-
-	// STEP 4: GET MODEL RESPONSE WITH AUGMENTED CONTEXT
-	fmt.Println("\n" + strings.Repeat("=", 80))
-	fmt.Println("STEP 4: Generating Response with Retrieved Context")
-	fmt.Println(strings.Repeat("=", 80) + "\n")
-
-	// Use foundation component!
-	chatModel, err := foundation.NewChatModel(ctx)
+// ******** NEW: A single factory to create all AI clients from one base client. ********
+func newAIClients(ctx context.Context) (*aiClients, error) {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		return nil, errors.New("GEMINI_API_KEY environment variable not set")
+	}
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: apiKey})
 	if err != nil {
-		return fmt.Errorf("failed to create chat model: %w", err)
+		return nil, fmt.Errorf("failed to create gemini client: %w", err)
 	}
 
-	conversation := []*schema.Message{
-		schema.SystemMessage("You are a helpful assistant. Answer questions based on the provided context documents."),
-		schema.UserMessage(augmentedPrompt),
-	}
-
-	fmt.Printf("\u001b[93m%s\u001b[0m: ", foundation.ChatModelName)
-
-	resp, err := chatModel.Generate(ctx, conversation)
+	chatModel, err := geminiModel.NewChatModel(ctx, &geminiModel.Config{Client: client, Model: chatModelName})
 	if err != nil {
-		return fmt.Errorf("failed to generate response: %w", err)
+		return nil, fmt.Errorf("failed to create chat model: %w", err)
 	}
 
-	fmt.Printf("\n%s\n", resp.Content)
+	embedder, err := gemini.NewEmbedder(ctx, &gemini.EmbeddingConfig{Client: client, Model: embeddingModelName})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create embedder: %w", err)
+	}
+	return &aiClients{chatModel: chatModel, embedder: embedder}, nil
+}
 
-	fmt.Println("\n" + strings.Repeat("=", 80))
-	fmt.Println("✅ RAG workflow complete! The model answered using retrieved documents.")
-	fmt.Println(strings.Repeat("=", 80))
+// ********* NEW: A factory specifically for our vector database retriever. *********
+func newRetriever(ctx context.Context, embedder embedding.Embedder) (retriever.Retriever, error) {
+	return chromemdb.New(ctx, "gophercon-knowledge", embedder,
+		chromemdb.WithDBPath(dbPath),
+		chromemdb.WithTopK(3),
+	)
+}
 
-	return nil
+// **************** NEW: A factory for the RAG chat template. ******************
+func newRAGTemplate() (prompt.ChatTemplate, error) {
+	return prompt.FromMessages(
+		schema.FString,
+		schema.SystemMessage(systemPrompt),
+		schema.UserMessage(`Based ONLY on the following context, answer the question.
+
+Context:
+{context}
+
+Question: {question}`),
+	), nil
 }
