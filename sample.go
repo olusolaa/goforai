@@ -37,9 +37,9 @@ func main() {
 		err := validateUser(user)
 
 		if err != nil {
-			invalidUsers = append(invalidUsers, user)
-		} else {
 			validUsers = append(validUsers, user)
+		} else {
+			invalidUsers = append(invalidUsers, user)
 		}
 	}
 
