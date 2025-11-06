@@ -19,6 +19,7 @@ import (
 	"github.com/cloudwego/eino/components/tool/utils"
 )
 
+// SearchFilesRequest defines the parameters for searching files.
 type SearchFilesRequest struct {
 	Path     string `json:"path,omitempty" jsonschema:"description=Directory path to search in (default: current directory '.')."`
 	Pattern  string `json:"pattern,omitempty" jsonschema:"description=Glob pattern for files (e.g., '**/*.go', '*.md'). Recommended over regex filter for path matching."`
@@ -26,6 +27,7 @@ type SearchFilesRequest struct {
 	Contains string `json:"contains,omitempty" jsonschema:"description=Regex pattern to search inside file contents. Returns line numbers and snippets."`
 }
 
+// FileMatch represents a file that matches the search criteria.
 type FileMatch struct {
 	File       string   `json:"file" jsonschema:"description=Path to the file."`
 	Lines      []int    `json:"lines,omitempty" jsonschema:"description=Line numbers where matches were found (content search only)."`
@@ -33,11 +35,13 @@ type FileMatch struct {
 	TotalLines int      `json:"total_lines,omitempty" jsonschema:"description=Total lines in the file (content search only)."`
 }
 
+// SearchFilesResponse contains the results of a file search operation.
 type SearchFilesResponse struct {
 	Matches []FileMatch `json:"matches" jsonschema:"description=Files that match the search criteria."`
 	Error   string      `json:"error,omitempty" jsonschema:"description=Error message if search failed."`
 }
 
+// NewSearchFilesTool creates a new file search tool for the agent.
 func NewSearchFilesTool(ctx context.Context) (tool.BaseTool, error) {
 	return utils.InferTool(
 		"search_files",
