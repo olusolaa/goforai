@@ -50,5 +50,3 @@ func NewCalculatorTool(ctx context.Context) (tool.BaseTool, error) {
 		},
 	)
 }
-
-
