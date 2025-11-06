@@ -12,12 +12,14 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 )
 
+// ReadFileRequest defines the parameters for reading a file.
 type ReadFileRequest struct {
 	Path      string `json:"path" jsonschema:"description=The relative path of the file to read (e.g. 'main.go' or 'pkg/handler/handler.go')"`
 	StartLine *int   `json:"start_line,omitempty" jsonschema:"description=Optional: line number to start reading from (1-indexed). Efficient for large files."`
 	EndLine   *int   `json:"end_line,omitempty" jsonschema:"description=Optional: line number to stop reading at (inclusive). Efficient for large files."`
 }
 
+// ReadFileResponse contains the file contents and metadata.
 type ReadFileResponse struct {
 	Content    string `json:"content" jsonschema:"description=The contents of the file with line numbers."`
 	TotalLines int    `json:"total_lines" jsonschema:"description=Total number of lines in the file."`
@@ -30,6 +32,7 @@ type ReadFileResponse struct {
 // maxLinesToRead sets a safety limit to prevent an LLM from requesting an enormous chunk of a file.
 const maxLinesToRead = 5000
 
+// NewReadFileTool creates a new file reading tool for the agent.
 func NewReadFileTool(ctx context.Context) (tool.BaseTool, error) {
 	return utils.InferTool(
 		"read_file",

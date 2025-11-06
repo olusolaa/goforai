@@ -12,15 +12,18 @@ import (
 	"github.com/cloudwego/eino/components/tool/utils"
 )
 
+// RAGSearchRequest defines the parameters for searching the knowledge base.
 type RAGSearchRequest struct {
 	Query string `json:"query" jsonschema:"description=The question to search in the GopherCon Africa 2025 knowledge base"`
 }
 
+// RAGSearchResponse contains the retrieved documents from the knowledge base.
 type RAGSearchResponse struct {
 	Documents string `json:"documents" jsonschema:"description=Relevant documents from the knowledge base"`
 	Error     string `json:"error,omitempty" jsonschema:"description=Error message if search failed"`
 }
 
+// NewRAGTool creates a new RAG (Retrieval Augmented Generation) tool for searching the knowledge base.
 func NewRAGTool(ctx context.Context) (tool.BaseTool, error) {
 	embedder, err := gemini.NewEmbedder(ctx)
 	if err != nil {
